@@ -49,7 +49,7 @@ func _ready() -> void:
 	cam_rig.set_script(preload("res://scripts/rts_camera.gd"))
 	cam_rig.set("handle_input", false)
 	cam_rig.set("distance", 70.0)
-	cam_rig.set("bounds", Rect2(-110, -70, 220, 140))
+	cam_rig.set("bounds", Rect2(-135, -135, 270, 270))
 	add_child(cam_rig)
 	cam_rig.position = Vector3(-60, 0, 0)
 	hud = GameHUD.new()
@@ -61,8 +61,11 @@ func _ready() -> void:
 	hud.place_confirmed.connect(_on_place_confirm)
 	hud.place_cancelled.connect(_on_place_cancel)
 	hud.train_pressed.connect(_on_train)
-	world = SimWorld.new(1)             # mundo de fundo enquanto o menu está aberto
+	hud.research_pressed.connect(_on_research)
+	world = SimWorld.new(1, ["militar", "energia", "energia", "militar"])   # mundo de fundo no menu
 	view.selected = selected
+	view.setup_terrain(world)
+	cam_rig.call("focus", Vector3(-95, 0, 95))
 	hud.show_menu(true)
 	if "--quickshot" in OS.get_cmdline_user_args():
 		var q := Node.new()
@@ -99,7 +102,7 @@ func _setup_world() -> void:
 	add_child(sun)
 	var ground := MeshInstance3D.new()
 	var pm := PlaneMesh.new()
-	pm.size = Vector2(Defs.HALF_W * 2 / 100.0, Defs.HALF_H * 2 / 100.0)
+	pm.size = Vector2(Defs.HALF * 2 / 100.0, Defs.HALF * 2 / 100.0)
 	ground.mesh = pm
 	var gm := StandardMaterial3D.new()
 	gm.albedo_color = Color("c4a06a")
@@ -125,8 +128,8 @@ func _setup_world() -> void:
 	add_child(ground)
 	# moldura de platôs em volta do mapa (só cenário)
 	var plato: PackedScene = load("res://assets/models/terreno_plato.glb")
-	var hw := Defs.HALF_W / 100.0
-	var hh := Defs.HALF_H / 100.0
+	var hw := Defs.HALF / 100.0
+	var hh := Defs.HALF / 100.0
 	var x := -hw - 8.0
 	while x <= hw + 8.0:
 		for z in [-hh - 8.0, hh + 8.0]:
@@ -158,11 +161,17 @@ func _on_restart() -> void:
 
 func _new_match() -> void:
 	view.clear_all()
-	world = SimWorld.new(int(Time.get_unix_time_from_system()) % 100000)
+	var me := hud.chosen_faction
+	var other := "energia" if me == "militar" else "militar"
+	world = SimWorld.new(int(Time.get_unix_time_from_system()) % 100000, [me, other, me, other])
 	bots.clear()
-	bots.append(SimBot.new(world, 1, difficulty))
+	for p in range(1, 4):
+		bots.append(SimBot.new(world, p, difficulty))
 	if watch_mode:
-		bots.append(SimBot.new(world, HUMAN, "normal"))
+		bots.append(SimBot.new(world, HUMAN, difficulty))
+	view.fog_player = -1 if watch_mode else HUMAN
+	view.setup_terrain(world)
+	hud.set_faction(me)
 	selected.clear()
 	view.selected = selected
 	hud.slot_ids.fill(-1)
@@ -171,7 +180,8 @@ func _new_match() -> void:
 	hud.hide_over()
 	placing = ""
 	_acc = 0.0
-	cam_rig.call("focus", Vector3(-80, 0, 0))
+	var b := world.base_of(HUMAN)
+	cam_rig.call("focus", Vector3(b.x / 100.0 + 18, 0, b.y / 100.0 - 6))
 	state = "playing"
 
 
@@ -186,11 +196,23 @@ func _process(delta: float) -> void:
 			world.step()
 			view.on_events(world, world.events)
 			for ev in world.events:
-				if ev["t"] == "die":
-					selected.erase(ev["id"])
+				match ev["t"]:
+					"die":
+						selected.erase(ev["id"])
+					"eliminated":
+						var q: int = ev["player"]
+						hud.show_toast("Você foi eliminado" if q == HUMAN else "%s foi eliminado" % GameHUD.PLAYER_NAMES[q])
+					"research":
+						if ev["player"] == HUMAN:
+							hud.show_toast("Pesquisa concluída: %s" % Defs.TECHS[ev["tech"]]["name"])
+					"core":
+						if ev["owner"] == HUMAN:
+							hud.show_toast("Você controla o Núcleo")
+			if world.tick % 2 == 0:
+				view.update_fog()
 			_acc -= STEP
 			steps += 1
-		if world.over:
+		if world.over or (not watch_mode and not world.players[HUMAN]["alive"]):
 			_game_over()
 	view.sync(world, clampf(_acc / STEP, 0.0, 1.0) if state == "playing" else 1.0, delta)
 	hud.refresh(world, HUMAN, selected, delta)
@@ -209,16 +231,23 @@ func _process(delta: float) -> void:
 func _game_over() -> void:
 	state = "over"
 	var title := "Empate"
-	if world.winner == HUMAN:
+	var reason := world.end_reason
+	if not world.over:
+		title = "Derrota"
+		reason = "sua Base central foi destruída"
+	elif world.winner == HUMAN:
 		title = "Vitória"
 	elif world.winner >= 0:
 		title = "Derrota"
 	if watch_mode:
-		title = "Fim — vence %s" % ("Azul" if world.winner == 0 else ("Vermelho" if world.winner == 1 else "ninguém"))
+		title = "Fim — vence %s" % (GameHUD.PLAYER_NAMES[world.winner] if world.winner >= 0 else "ninguém")
 	var me: Dictionary = world.players[HUMAN]
 	var secs := world.tick / Defs.TICK_HZ
-	hud.show_over(title, "%s · %02d:%02d\nMinério coletado %d · Abates %d · Perdas %d · Pontos %d x %d" % [
-		world.end_reason, secs / 60, secs % 60, me["mined"], me["killed"], me["lost"], world.score(0), world.score(1)])
+	var scores := PackedStringArray()
+	for q in world.players.size():
+		scores.append("%s %d" % [GameHUD.PLAYER_NAMES[q], world.score(q)])
+	hud.show_over(title, "%s · %02d:%02d\nMinério coletado %d · Núcleo %d · Abates %d · Perdas %d\nPontos: %s" % [
+		reason, secs / 60, secs % 60, me["mined"], me["core_total"], me["killed"], me["lost"], "  ".join(scores)])
 
 
 # ------------------------------------------------------------------ comandos do jogador
@@ -255,6 +284,15 @@ func _on_place_cancel() -> void:
 	placing = ""
 	view.hide_ghost()
 	hud.close_panels()
+
+
+func _on_research(tech: String) -> void:
+	var b: SimEnt = world.by_id.get(hud.prod_building)
+	var err := world.can_research(HUMAN, b, tech)
+	if err != "":
+		hud.show_toast(err)
+		return
+	world.issue(HUMAN, {"kind": "research", "building": b.id, "tech": tech})
 
 
 func _on_train(type: String) -> void:
@@ -377,7 +415,7 @@ func _world_tap(pos: Vector2) -> void:
 		ghost_pos = _screen_to_ground(pos)
 		return
 	var e := _pick(pos)
-	if e and e.owner == HUMAN and e.kind == "unit" and not Defs.UNITS[e.type].get("worker", false):
+	if e and e.owner == HUMAN and e.is_combat():
 		selected.clear()
 		selected[e.id] = true
 		return
@@ -390,7 +428,7 @@ func _world_tap(pos: Vector2) -> void:
 		return
 	if e and e.owner >= 0 and e.owner != HUMAN:
 		world.issue(HUMAN, {"kind": "attack", "ids": ids, "target": e.id})
-		view.marker(Vector3(e.x / 100.0, 0, e.y / 100.0), Color(2.4, 0.4, 0.3))
+		view.marker(Vector3(e.x / 100.0, world.height_at(e.x, e.y) / 100.0, e.y / 100.0), Color(2.4, 0.4, 0.3))
 		return
 	var g := _screen_to_ground(pos)
 	world.issue(HUMAN, {"kind": "amove", "ids": ids, "x": int(g.x * 100), "y": int(g.z * 100)})
@@ -412,7 +450,10 @@ func _pick(pos: Vector2) -> SimEnt:
 	var best_d := INF
 	var px_per_m := get_viewport().get_visible_rect().size.y / (2.0 * float(cam_rig.get("distance")) * tan(deg_to_rad(cam.fov) / 2.0))
 	for e in world.ents:
-		var c := Vector3(e.x / 100.0, GameView.height_of(e) * 0.7, e.y / 100.0)
+		var n: Node3D = view.nodes.get(e.id)
+		if n == null or not n.visible:
+			continue
+		var c := Vector3(e.x / 100.0, world.height_at(e.x, e.y) / 100.0 + GameView.height_of(e) * 0.7, e.y / 100.0)
 		if cam.is_position_behind(c):
 			continue
 		var d := cam.unproject_position(c).distance_to(pos)
@@ -434,6 +475,12 @@ func _screen_to_ground(pos: Vector2) -> Vector3:
 	var d := cam.project_ray_normal(pos)
 	if absf(d.y) < 0.0001:
 		return Vector3(o.x, 0, o.z)
-	var t := -o.y / d.y
-	var p := o + d * t
-	return Vector3(clampf(p.x, -Defs.HALF_W / 100.0, Defs.HALF_W / 100.0), 0, clampf(p.z, -Defs.HALF_H / 100.0, Defs.HALF_H / 100.0))
+	# intersecta o terreno: primeiro o chão, depois corrige pela altura do platô
+	var h := 0.0
+	var p := o
+	for i in 3:
+		var t := (h - o.y) / d.y
+		p = o + d * t
+		h = world.height_at(int(p.x * 100), int(p.z * 100)) / 100.0
+	var lim := Defs.HALF / 100.0
+	return Vector3(clampf(p.x, -lim, lim), h, clampf(p.z, -lim, lim))

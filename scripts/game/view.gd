@@ -20,6 +20,13 @@ var _ghost: Node3D
 var _ghost_type := ""
 var _ghost_ok_mat: StandardMaterial3D
 var _ghost_bad_mat: StandardMaterial3D
+var fog_player := 0                # de quem é a visão mostrada (-1 = sem névoa, modo espectador)
+var _terrain: Node3D
+var _fog_mesh: MeshInstance3D
+var _fog_tex: ImageTexture
+var _core_ring: MeshInstance3D
+var _core_mats: Array[StandardMaterial3D] = []
+var _world: SimWorld
 
 
 func _ready() -> void:
@@ -52,6 +59,8 @@ func _scene(model: String) -> PackedScene:
 static func model_of(e: SimEnt) -> String:
 	if e.kind == "ore":
 		return "recurso_minerio"
+	if e.kind == "core":
+		return "recurso_nucleo"
 	return Defs.def_of(e.type)["model"]
 
 
@@ -61,6 +70,82 @@ static func height_of(e: SimEnt) -> float:
 	if e.kind == "building":
 		return 3.0
 	return 1.2
+
+
+## Monta o terreno do mapa (platôs, rampas, anel do Núcleo e névoa) a partir da simulação.
+func setup_terrain(w: SimWorld) -> void:
+	_world = w
+	if _terrain:
+		_terrain.queue_free()
+	_terrain = Node3D.new()
+	add_child(_terrain)
+	var plato := _scene("terreno_plato")
+	var rampa := _scene("terreno_rampa")
+	for pl in w.plateaus:
+		var cx: float = pl["cx"] / 100.0
+		var cy: float = pl["cy"] / 100.0
+		var d: int = pl["dir"]
+		for i in 4:
+			for j in 4:
+				var t: Node3D = plato.instantiate()
+				t.position = Vector3(cx - 24 + i * 16, 0, cy - 24 + j * 16)
+				_terrain.add_child(t)
+		var r: Node3D = rampa.instantiate()
+		r.position = Vector3(cx + d * (pl["half"] + Defs.RAMP_LEN / 2) / 100.0, 0, cy)
+		r.rotation.y = -PI / 2 if d > 0 else PI / 2
+		_terrain.add_child(r)
+	# anel da zona do Núcleo (cor de quem controla)
+	_core_mats.clear()
+	for c in TEAM_COLORS:
+		_core_mats.append(_unshaded(c * 1.6))
+	_core_mats.append(_unshaded(Color(0.9, 0.9, 0.9, 1)))
+	_core_ring = MeshInstance3D.new()
+	var tm := TorusMesh.new()
+	tm.inner_radius = Defs.CORE_RADIUS / 100.0 - 0.4
+	tm.outer_radius = Defs.CORE_RADIUS / 100.0
+	tm.rings = 64
+	tm.ring_segments = 4
+	_core_ring.mesh = tm
+	_core_ring.position.y = 0.1
+	_core_ring.material_override = _core_mats[4]
+	_core_ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_terrain.add_child(_core_ring)
+	# névoa: um plano escuro sobre o mapa cuja transparência vem da grade de visão
+	_fog_mesh = MeshInstance3D.new()
+	var pm := PlaneMesh.new()
+	pm.size = Vector2(Defs.HALF * 2 / 100.0, Defs.HALF * 2 / 100.0)
+	_fog_mesh.mesh = pm
+	# logo acima dos platôs; deslocado em Z para compensar a inclinação da câmera (52°)
+	_fog_mesh.position.y = 4.6
+	_fog_mesh.position.z = 4.6 / tan(deg_to_rad(52.0))
+	var fm := StandardMaterial3D.new()
+	fm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	fm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	fm.albedo_color = Color(0.02, 0.02, 0.03, 1)
+	fm.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
+	_fog_tex = ImageTexture.create_from_image(Image.create(w.FN, w.FN, false, Image.FORMAT_RGBA8))
+	fm.albedo_texture = _fog_tex
+	_fog_mesh.material_override = fm
+	_fog_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_fog_mesh.visible = fog_player >= 0
+	_terrain.add_child(_fog_mesh)
+	update_fog()
+
+
+func update_fog() -> void:
+	if _world == null or _fog_mesh == null:
+		return
+	_fog_mesh.visible = fog_player >= 0
+	if fog_player < 0:
+		return
+	var fn := _world.FN
+	var v: PackedByteArray = _world.vis[fog_player]
+	var ex: PackedByteArray = _world.explored[fog_player]
+	var data := PackedByteArray()
+	data.resize(fn * fn * 4)
+	for i in fn * fn:
+		data[i * 4 + 3] = 0 if v[i] == 1 else (105 if ex[i] == 1 else 185)
+	_fog_tex.update(Image.create_from_data(fn, fn, false, Image.FORMAT_RGBA8, data))
 
 
 func clear_all() -> void:
@@ -78,6 +163,7 @@ func _make(e: SimEnt) -> void:
 	var n: Node3D = _scene(model_of(e)).instantiate()
 	add_child(n)
 	TeamColor.apply(n, TEAM_COLORS[maxi(e.owner, 0)])
+	n.set_meta("kind", e.kind)
 	var anim := Node.new()
 	anim.set_script(preload("res://scripts/asset_animator.gd"))
 	n.add_child(anim)
@@ -115,9 +201,13 @@ func sync(w: SimWorld, alpha: float, delta: float) -> void:
 			_make(e)
 		var n: Node3D = nodes[e.id]
 		var inf: Dictionary = info[e.id]
-		var x := lerpf(e.px, e.x, alpha) / 100.0
-		var z := lerpf(e.py, e.y, alpha) / 100.0
-		n.position = Vector3(x, 0, z)
+		var ix := int(lerpf(e.px, e.x, alpha))
+		var iz := int(lerpf(e.py, e.y, alpha))
+		n.position = Vector3(ix / 100.0, w.height_at(ix, iz) / 100.0, iz / 100.0)
+		if fog_player >= 0 and e.owner >= 0 and e.owner != fog_player:
+			n.visible = w.visible_to(fog_player, e) if e.kind == "unit" else w.known_to(fog_player, e)
+		else:
+			n.visible = true
 		(inf["ring"] as Node3D).visible = selected.has(e.id)
 		if e.kind == "unit":
 			var target_yaw: float = inf["yaw"]
@@ -141,6 +231,8 @@ func sync(w: SimWorld, alpha: float, delta: float) -> void:
 		elif e.kind == "ore":
 			var s := 0.5 + 0.5 * float(e.amount) / maxf(1.0, e.max_hp)
 			n.scale = Vector3(s, s, s)
+	if _core_ring:
+		_core_ring.material_override = _core_mats[w.core_owner if w.core_owner >= 0 else 4]
 	for id in nodes.keys():
 		if not alive.has(id):
 			nodes[id].queue_free()
@@ -167,23 +259,28 @@ func on_events(w: SimWorld, events: Array[Dictionary]) -> void:
 			"shot":
 				var a: SimEnt = w.by_id.get(ev["a"])
 				var b: SimEnt = w.by_id.get(ev["b"])
-				if a and b:
-					_beam(a, b)
+				if a and b and (fog_player < 0 or w.visible_to(fog_player, a) or w.visible_to(fog_player, b)):
+					_beam(w, a, b)
 			"die":
-				if ev["kind"] != "ore":
+				if ev["kind"] == "unit" or ev["kind"] == "building":
+					var x: int = ev["x"]
+					var y: int = ev["y"]
+					if fog_player >= 0 and ev["owner"] != fog_player and w.vis[fog_player][w.fog_idx(x, y)] == 0:
+						continue
 					var big: bool = ev["kind"] == "building"
-					_explosion(Vector3(ev["x"] / 100.0, 1.0 if not big else 2.5, ev["y"] / 100.0), 3.2 if big else 1.4)
+					_explosion(Vector3(x / 100.0, w.height_at(x, y) / 100.0 + (1.0 if not big else 2.5), y / 100.0), 3.2 if big else 1.4)
 
 
-func _beam(a: SimEnt, b: SimEnt) -> void:
-	var from := Vector3(a.x / 100.0, height_of(a) + (2.0 if a.type == "torre" else 0.4), a.y / 100.0)
-	var to := Vector3(b.x / 100.0, height_of(b), b.y / 100.0)
+func _beam(w: SimWorld, a: SimEnt, b: SimEnt) -> void:
+	var tower := a.kind == "building"
+	var from := Vector3(a.x / 100.0, w.height_at(a.x, a.y) / 100.0 + height_of(a) + (2.0 if tower else 0.4), a.y / 100.0)
+	var to := Vector3(b.x / 100.0, w.height_at(b.x, b.y) / 100.0 + height_of(b), b.y / 100.0)
 	var length := from.distance_to(to)
 	if length < 0.1:
 		return
 	var m := MeshInstance3D.new()
 	var bm := BoxMesh.new()
-	var thick := 0.22 if a.type == "tanque" else 0.12
+	var thick := 0.22 if a.cls() == "heavy" else 0.12
 	bm.size = Vector3(thick, thick, length)
 	m.mesh = bm
 	m.material_override = _shot_mats[maxi(a.owner, 0)]

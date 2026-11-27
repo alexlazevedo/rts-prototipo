@@ -78,13 +78,16 @@ func _run() -> void:
 	await tap(center(button("Normal")))
 	await wait(0.3)
 	check(g.state == "playing", "menu: tocar em Normal inicia a partida")
+	check(g.world.players.size() == 4 and g.world.players[0]["faction"] == "militar", "partida com 4 jogadores, você na facção escolhida")
+	var enemy_base: SimEnt = g.world.base_of(1)
+	check(not g.view.nodes[enemy_base.id].visible, "névoa esconde a base inimiga no início")
 	g.speed = 6.0
 
 	await tap(center(g.hud.build_btn))
-	check(g.hud.mode == "build_menu", "botão Construir abre o menu de prédios")
+	check(g.hud.mode == "build_menu" and g.hud.build_menu.has_node("laboratorio"), "botão Construir abre o menu de prédios (com laboratório)")
 	await tap(center(g.hud.build_menu.get_node("fabrica")))
 	check(g.placing == "fabrica", "escolher Fábrica entra no modo de posicionar")
-	await tap(screen_of(Vector3(-74, 0, 12)))
+	await tap(screen_of(Vector3(-100, 4, 81)))
 	var err: String = g._place_error()
 	check(err == "", "tocar no mapa posiciona o prédio em lugar válido (%s)" % (err if err != "" else "ok"))
 	await shot("02_posicionando")
@@ -103,7 +106,7 @@ func _run() -> void:
 	while not fab.built and g._clock - t0 < 15.0:
 		await wait(0.2)
 	check(fab.built, "fábrica termina de construir")
-	await tap(screen_of(Vector3(fab.x / 100.0, 3, fab.y / 100.0)))
+	await tap(screen_of(Vector3(fab.x / 100.0, 7, fab.y / 100.0)))
 	check(g.hud.mode == "production" and g.hud.prod_building == fab.id, "tocar na fábrica abre o painel de produção")
 	var made := 0
 	t0 = g._clock
@@ -142,23 +145,23 @@ func _run() -> void:
 	await tap(s0, 0.04)
 	check(g.selected.size() == 3, "dois toques na barra selecionam todas (%d)" % g.selected.size())
 
-	g.cam_rig.call("focus", Vector3(-55, 0, 0))
+	g.cam_rig.call("focus", Vector3(-88, 0, 98))
 	await wait(0.1)
-	await tap(screen_of(Vector3(-40, 0, 4)))
+	await tap(screen_of(Vector3(-85, 4, 100)))
 	await wait(0.3)
 	var ok := true
 	var dbg := ""
 	for id in g.selected:
 		var u: SimEnt = g.world.by_id.get(id)
 		dbg += " %s:%s:%d" % [u.type if u else "?", u.order if u else "-", u.dx if u else 0]
-		if u == null or not (u.order == "amove" or u.order == "idle") or absi(u.dx + 4000) > 900:
+		if u == null or not (u.order == "amove" or u.order == "idle") or absi(u.dx + 8500) > 900:
 			ok = false
 	check(ok, "toque no chão manda o grupo mover atacando (%s, sel=%d)" % [dbg, g.selected.size()])
 	await shot("04_ordem")
 
-	touch(0, screen_of(Vector3(-60, 0, -10)), true)
+	touch(0, screen_of(Vector3(-95, 4, 106)), true)
 	await wait(0.7)
-	touch(0, screen_of(Vector3(-60, 0, -10)), false)
+	touch(0, screen_of(Vector3(-95, 4, 106)), false)
 	await wait(0.3)
 	ok = true
 	for id in g.selected:
@@ -191,25 +194,23 @@ func _run() -> void:
 	g.cam_rig.set("distance", 70.0)
 	g.cam_rig.call("zoom_by", 1.0)
 
-	await tap(center(g.hud.minimap) + Vector2(60, 0))
-	check(g.cam_rig.position.x > 20.0, "tocar no minimapa leva a câmera até o ponto")
-	g.cam_rig.call("focus", Vector3(-45, 0, 0))
+	await tap(center(g.hud.minimap) + Vector2(50, -50))
+	check(g.cam_rig.position.x > 50.0 and g.cam_rig.position.z < -50.0, "tocar no minimapa leva a câmera até o ponto")
+	g.cam_rig.call("focus", Vector3(-88, 0, 98))
 
 	# deixa a partida correr para capturar combate
 	g.speed = 10.0
 	t0 = g._clock
 	var fought := false
-	while g._clock - t0 < 40.0 and g.state == "playing":
+	while g._clock - t0 < 60.0 and g.state == "playing":
 		await wait(0.25)
-		for ev in g.world.events:
-			if ev["t"] == "shot":
+		var a: SimEnt = null
+		for e in g.world.ents:
+			if e.kind == "unit" and e.aim >= 0 and (e.owner == 0 or g.world.visible_to(0, e)):
+				a = e
 				fought = true
+				break
 		if fought:
-			var a: SimEnt = null
-			for e in g.world.ents:
-				if e.kind == "unit" and e.aim >= 0:
-					a = e
-					break
 			if a:
 				g.cam_rig.call("focus", Vector3(a.x / 100.0, 0, a.y / 100.0))
 				g.speed = 1.0

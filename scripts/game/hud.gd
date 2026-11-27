@@ -7,6 +7,7 @@ signal build_pressed(type: String)
 signal place_confirmed
 signal place_cancelled
 signal train_pressed(type: String)
+signal research_pressed(tech: String)
 signal panel_closed
 signal start_pressed(difficulty: String, watch: bool)
 signal restart_pressed
@@ -15,7 +16,7 @@ const W := 1688.0
 const H := 780.0
 const SLOT := Vector2(70, 60)
 const SLOT_GAP := 6.0
-const MAP_RECT := Rect2(12, H - 12 - 150, 225, 150)
+const MAP_RECT := Rect2(12, H - 12 - 176, 176, 176)
 const BTN := Vector2(150, 130)
 
 var game: Node
@@ -41,6 +42,9 @@ var over_text: Label
 var minimap: Control
 var bars: Control
 var mode := "idle"                       # idle, build_menu, placing, production
+var chosen_faction := "militar"
+var faction := "militar"
+var fac_buttons: Dictionary = {}
 var bars_drawn := 0                      # diagnóstico (teste automático)
 var bars_calls := 0
 var prod_building := -1
@@ -85,11 +89,11 @@ func _ready() -> void:
 		slot_labels.append(l)
 		slot_bars.append(bar)
 
-	var info_bg := _panel(Rect2(W - 12 - 520, 10, 520, 60), 0.72)
+	var info_bg := _panel(Rect2(W - 12 - 660, 10, 660, 60), 0.72)
 	root.add_child(info_bg)
 	info_label = Label.new()
 	info_label.position = Vector2(14, 14)
-	info_label.size = Vector2(500, 34)
+	info_label.size = Vector2(640, 34)
 	info_bg.add_child(info_label)
 
 	minimap = _Overlay.new()
@@ -127,16 +131,9 @@ func _ready() -> void:
 
 	build_menu = HBoxContainer.new()
 	build_menu.add_theme_constant_override("separation", 8)
-	for t in ["fabrica", "hangar", "torre"]:
-		var b := _button("", BTN)
-		b.name = t
-		b.pressed.connect(func() -> void: build_pressed.emit(t))
-		build_menu.add_child(b)
-	var close1 := _button("Fechar", Vector2(110, BTN.y))
-	close1.pressed.connect(func() -> void: _set_mode("idle"))
-	build_menu.add_child(close1)
-	build_menu.position = Vector2(W - 12 - (3 * BTN.x + 110 + 24), H - 12 - BTN.y)
+	build_menu.position = Vector2(W - 12 - (4 * BTN.x + 110 + 32), H - 12 - BTN.y)
 	root.add_child(build_menu)
+	set_faction("militar")
 
 	place_bar = HBoxContainer.new()
 	place_bar.add_theme_constant_override("separation", 8)
@@ -171,6 +168,23 @@ func _ready() -> void:
 
 	_build_menus(root)
 	_set_mode("idle")
+
+
+## Botões de construção da facção do jogador.
+func set_faction(fac: String) -> void:
+	faction = fac
+	for c in build_menu.get_children():
+		build_menu.remove_child(c)   # remove já, para os novos botões herdarem os nomes
+		c.queue_free()
+	for role in ["fabrica", "hangar", "torre", "lab"]:
+		var t := Defs.type_for(fac, role)
+		var b := _button("", BTN)
+		b.name = t
+		b.pressed.connect(func() -> void: build_pressed.emit(t))
+		build_menu.add_child(b)
+	var close1 := _button("Fechar", Vector2(110, BTN.y))
+	close1.pressed.connect(func() -> void: _set_mode("idle"))
+	build_menu.add_child(close1)
 
 
 func _panel(r: Rect2, alpha: float) -> Panel:
@@ -214,9 +228,23 @@ func _build_menus(root: Control) -> void:
 	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(t)
 	var s := Label.new()
-	s.text = "Você (azul) contra 1 bot (vermelho). Destrua a Base central inimiga.\nAos 8 min as Bases perdem a blindagem; aos 10 min vence quem tiver mais pontos."
+	s.text = "Você (azul) contra 3 bots, todos contra todos. Destrua as Bases centrais inimigas.\nControle o centro para ganhar Núcleo (libera o Nível 2). Aos 10 min vence quem tiver mais pontos."
 	s.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(s)
+	var frow := HBoxContainer.new()
+	frow.alignment = BoxContainer.ALIGNMENT_CENTER
+	frow.add_theme_constant_override("separation", 14)
+	var flab := Label.new()
+	flab.text = "Facção:"
+	frow.add_child(flab)
+	for pair in [["militar", "Militar — resistente"], ["energia", "Energia — rápida, escudos"]]:
+		var fb := _button(pair[1], Vector2(330, 64))
+		fb.toggle_mode = true
+		fb.button_pressed = pair[0] == chosen_faction
+		fb.pressed.connect(func() -> void: _choose_faction(pair[0]))
+		fac_buttons[pair[0]] = fb
+		frow.add_child(fb)
+	box.add_child(frow)
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_theme_constant_override("separation", 14)
@@ -226,7 +254,7 @@ func _build_menus(root: Control) -> void:
 		b.pressed.connect(func() -> void: start_pressed.emit(pair[0], false))
 		row.add_child(b)
 	box.add_child(row)
-	var watch := _button("Assistir bot x bot", Vector2(320, 70))
+	var watch := _button("Assistir 4 bots", Vector2(320, 70))
 	watch.pressed.connect(func() -> void: start_pressed.emit("normal", true))
 	var wrow := HBoxContainer.new()
 	wrow.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -249,6 +277,12 @@ func _build_menus(root: Control) -> void:
 	arow.add_child(again)
 	ob.add_child(arow)
 	over_overlay.visible = false
+
+
+func _choose_faction(f: String) -> void:
+	chosen_faction = f
+	for k in fac_buttons:
+		(fac_buttons[k] as Button).button_pressed = k == f
 
 
 func _overlay_box(root: Control) -> Control:
@@ -283,11 +317,17 @@ func _set_mode(m: String) -> void:
 func open_production(b: SimEnt) -> void:
 	prod_building = b.id
 	for c in prod_buttons.get_children():
+		prod_buttons.remove_child(c)
 		c.queue_free()
 	for t: String in Defs.BUILDINGS[b.type]["produces"]:
 		var btn := _button("", BTN)
 		btn.name = t
 		btn.pressed.connect(func() -> void: train_pressed.emit(t))
+		prod_buttons.add_child(btn)
+	for tech: String in Defs.BUILDINGS[b.type].get("research", []):
+		var btn := _button("", Vector2(190, BTN.y))
+		btn.name = "tech_" + tech
+		btn.pressed.connect(func() -> void: research_pressed.emit(tech))
 		prod_buttons.add_child(btn)
 	var close := _button("Fechar", Vector2(110, BTN.y))
 	close.pressed.connect(func() -> void:
@@ -326,7 +366,11 @@ func hide_over() -> void:
 
 
 const NAMES := {"fabrica": "Fábrica", "hangar": "Hangar", "torre": "Torre", "base": "Base central",
-	"buggy": "Buggy", "tanque": "Tanque", "antiaereo": "Antiaéreo", "vtol": "VTOL", "coletor": "Coletor"}
+	"laboratorio": "Laboratório", "lab": "Laboratório",
+	"buggy": "Buggy", "tanque": "Tanque", "antiaereo": "Antiaéreo", "vtol": "VTOL", "coletor": "Coletor",
+	"e_base": "Base central", "e_fabrica": "Fábrica", "e_hangar": "Hangar", "e_torre": "Torre", "e_laboratorio": "Laboratório",
+	"drone": "Drone", "sentinela": "Sentinela", "obelisco": "Obelisco", "prisma": "Prisma", "lamina": "Lâmina"}
+const PLAYER_NAMES := ["Azul", "Vermelho", "Amarelo", "Verde"]
 
 
 # ------------------------------------------------------------------ toque: o que está sob o dedo
@@ -338,7 +382,7 @@ func blocks(pos: Vector2) -> bool:
 	for c: Control in [build_btn, build_menu, place_bar, prod_panel]:
 		if c.visible and c.get_global_rect().grow(6).has_point(pos):
 			return true
-	return Rect2(W - 12 - 520, 10, 520, 60).has_point(pos)
+	return Rect2(W - 12 - 660, 10, 660, 60).has_point(pos)
 
 
 func slot_at(pos: Vector2) -> int:
@@ -392,8 +436,9 @@ func refresh(w: SimWorld, p: int, selected: Dictionary, delta: float) -> void:
 	var pl: Dictionary = w.players[p]
 	var secs := w.tick / Defs.TICK_HZ
 	var warn := "  · BASES SEM BLINDAGEM" if w.tick >= Defs.ARMOR_OFF_TICK else ""
-	info_label.text = "Minério %d    Coletores %d/%d    Exército %d/%d    %02d:%02d%s" % [
-		pl["ore"], w.queued_count(p, true), Defs.WORKER_CAP, w.queued_count(p, false), Defs.COMBAT_CAP,
+	var core_mark := " ◆" if w.core_owner == p else ""
+	info_label.text = "Minério %d   Núcleo %d%s   Colet. %d/%d   Exército %d/%d   %02d:%02d%s" % [
+		pl["ore"], pl["core"], core_mark, w.queued_count(p, true), Defs.WORKER_CAP, w.queued_count(p, false), Defs.COMBAT_CAP,
 		secs / 60, secs % 60, warn]
 
 	if mode == "build_menu":
@@ -413,6 +458,8 @@ func refresh(w: SimWorld, p: int, selected: Dictionary, delta: float) -> void:
 			var line: String = NAMES[bld.type]
 			if not bld.built:
 				line += " — em construção %d%%" % (100 * bld.progress / Defs.BUILDINGS[bld.type]["time"])
+			elif bld.research != "":
+				line += " — pesquisando %s %d%%" % [Defs.TECHS[bld.research]["name"], 100 * bld.rprog / Defs.TECHS[bld.research]["time"]]
 			elif not bld.queue.is_empty():
 				line += " — produzindo %s %d%%  (fila %d)" % [NAMES[bld.queue[0]], 100 * bld.qprog / Defs.UNITS[bld.queue[0]]["time"], bld.queue.size()]
 			prod_title.text = line
@@ -420,8 +467,15 @@ func refresh(w: SimWorld, p: int, selected: Dictionary, delta: float) -> void:
 				if b is Button and Defs.UNITS.has(String(b.name)):
 					var t := String(b.name)
 					var q := bld.queue.count(t)
-					(b as Button).text = "%s\n%d%s" % [NAMES[t], Defs.UNITS[t]["cost"], "  ×%d" % q if q > 0 else ""]
+					var lock := "" if w.has_tech(p, Defs.UNITS[t].get("tech", "")) else "\n(Nível 2)"
+					(b as Button).text = "%s\n%d%s%s" % [NAMES[t], Defs.UNITS[t]["cost"], "  ×%d" % q if q > 0 else "", lock]
 					(b as Button).disabled = w.can_train(p, bld, t) != ""
+				elif b is Button and String(b.name).begins_with("tech_"):
+					var tech := String(b.name).substr(5)
+					var td: Dictionary = Defs.TECHS[tech]
+					var done := w.has_tech(p, tech)
+					(b as Button).text = "%s\n%s" % [td["name"], "pronto" if done else "%d + %d Núcleo" % [td["ore"], td["core"]]]
+					(b as Button).disabled = done or w.can_research(p, bld, tech) != ""
 			prod_panel.position = Vector2(W - 12 - prod_panel.size.x, H - 12 - prod_panel.size.y)
 
 	if toast_time > 0.0:
@@ -448,7 +502,7 @@ func _draw_bars(c: Control) -> void:
 		if not wants:
 			continue
 		var n: Node3D = game.view.nodes.get(e.id)
-		if n == null:
+		if n == null or not n.visible:
 			continue
 		var top := n.position + Vector3(0, GameView.height_of(e) + (5.0 if e.kind == "building" else 2.6), 0)
 		if cam.is_position_behind(top):
@@ -465,31 +519,45 @@ func _draw_bars(c: Control) -> void:
 
 func _draw_map(c: Control) -> void:
 	var sz := c.size
-	c.draw_rect(Rect2(Vector2.ZERO, sz), Color(0.24, 0.19, 0.12, 0.85))
-	c.draw_rect(Rect2(Vector2.ZERO, sz), Color("a9bccd"), false, 2.0)
+	c.draw_rect(Rect2(Vector2.ZERO, sz), Color(0.3, 0.24, 0.15, 0.9))
 	if game == null or game.world == null:
 		return
 	var w: SimWorld = game.world
+	var fp: int = game.view.fog_player
 	var to_map := func(x: int, y: int) -> Vector2:
-		return Vector2((x + Defs.HALF_W) * sz.x / (2.0 * Defs.HALF_W), (y + Defs.HALF_H) * sz.y / (2.0 * Defs.HALF_H))
+		return Vector2((x + Defs.HALF) * sz.x / (2.0 * Defs.HALF), (y + Defs.HALF) * sz.y / (2.0 * Defs.HALF))
+	for pl in w.plateaus:
+		var h: int = pl["half"]
+		var a: Vector2 = to_map.call(pl["cx"] - h, pl["cy"] - h)
+		var b: Vector2 = to_map.call(pl["cx"] + h, pl["cy"] + h)
+		c.draw_rect(Rect2(a, b - a), Color(0.45, 0.36, 0.24, 0.9))
+	var cc: Vector2 = to_map.call(0, 0)
+	var cr := Defs.CORE_RADIUS * sz.x / (2.0 * Defs.HALF)
+	c.draw_arc(cc, cr, 0, TAU, 24, GameView.TEAM_COLORS[w.core_owner] if w.core_owner >= 0 else Color("ff4fa3"), 2.0)
 	for e in w.ents:
 		var p: Vector2 = to_map.call(e.x, e.y)
 		if e.kind == "ore":
-			c.draw_circle(p, 4, Color("d9761c"))
+			c.draw_circle(p, 2.5, Color("d9761c"))
 		elif e.kind == "building":
-			var col: Color = GameView.TEAM_COLORS[e.owner]
-			c.draw_rect(Rect2(p - Vector2(5, 5), Vector2(10, 10)), col)
-		else:
-			c.draw_circle(p, 2.5, GameView.TEAM_COLORS[e.owner].lightened(0.3))
+			if fp >= 0 and e.owner != fp and not w.known_to(fp, e):
+				continue
+			c.draw_rect(Rect2(p - Vector2(4, 4), Vector2(8, 8)), GameView.TEAM_COLORS[e.owner])
+		elif e.kind == "unit":
+			if fp >= 0 and e.owner != fp and not w.visible_to(fp, e):
+				continue
+			c.draw_circle(p, 2.2, GameView.TEAM_COLORS[e.owner].lightened(0.35))
+	if fp >= 0 and game.view._fog_tex:
+		c.draw_texture_rect(game.view._fog_tex, Rect2(Vector2.ZERO, sz), false)
 	var cp: Vector3 = game.cam_rig.position
 	var cv: Vector2 = to_map.call(int(cp.x * 100), int(cp.z * 100))
-	var half := Vector2(game.cam_rig.distance * 0.9, game.cam_rig.distance * 0.42) * sz.x / (2.0 * Defs.HALF_W / 100.0)
-	c.draw_rect(Rect2(cv - half, half * 2), Color(1, 1, 1, 0.8), false, 1.5)
+	var half := Vector2(game.cam_rig.distance * 0.9, game.cam_rig.distance * 0.42) * sz.x / (2.0 * Defs.HALF / 100.0)
+	c.draw_rect(Rect2(cv - half, half * 2), Color(1, 1, 1, 0.85), false, 1.5)
+	c.draw_rect(Rect2(Vector2.ZERO, sz), Color("a9bccd"), false, 2.0)
 
 
 func map_to_world(pos: Vector2) -> Vector3:
 	var local := (pos - MAP_RECT.position) / MAP_RECT.size
-	return Vector3((local.x * 2.0 - 1.0) * Defs.HALF_W / 100.0, 0, (local.y * 2.0 - 1.0) * Defs.HALF_H / 100.0)
+	return Vector3((local.x * 2.0 - 1.0) * Defs.HALF / 100.0, 0, (local.y * 2.0 - 1.0) * Defs.HALF / 100.0)
 
 
 class _Overlay extends Control:

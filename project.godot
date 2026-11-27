@@ -1,0 +1,25 @@
+; Projeto Godot 4 — RTS mobile (protótipo de assets)
+config_version=5
+
+[application]
+
+config/name="RTS Mobile — protótipo"
+run/main_scene="res://scenes/game.tscn"
+config/features=PackedStringArray("4.7", "Mobile")
+
+[display]
+
+window/size/viewport_width=1688
+window/size/viewport_height=780
+window/stretch/mode="canvas_items"
+window/handheld/orientation=0
+
+[input_devices]
+
+pointing/emulate_touch_from_mouse=true
+
+[rendering]
+
+renderer/rendering_method="mobile"
+anti_aliasing/quality/msaa_3d=2
+textures/vram_compression/import_etc2_astc=true
